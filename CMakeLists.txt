@@ -32,6 +32,10 @@ add_executable(TaikoKeyWASAPI WIN32 src/app/Main.cpp src/app/OriginalMainUi.cpp 
 set_source_files_properties(src/app/App.rc PROPERTIES OBJECT_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/app/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/src/image/Background.bmp")
 target_link_libraries(TaikoKeyWASAPI PRIVATE taiko_windows comctl32 comdlg32 gdi32)
+if(MSVC)
+  # App.rc already embeds our manifest; do not generate a second resource ID 1.
+  target_link_options(TaikoKeyWASAPI PRIVATE /MANIFEST:NO)
+endif()
 if(MINGW)
   target_link_options(TaikoKeyWASAPI PRIVATE -municode)
 endif()
