@@ -1,5 +1,7 @@
 #pragma once
 #include "core/Common.h"
+#include <propkeydef.h> // DEFINE_PROPERTYKEY must precede the Windows SDK's device keys.
+
 #include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <vector>
