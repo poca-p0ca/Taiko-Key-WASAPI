@@ -33,7 +33,7 @@ class Controller {
     DiagnosticQueue diagnostics_;
     Counters counters_;
     std::atomic<float> volume_{.25f};
-    std::atomic<bool> deviceDirty_{};
+    std::atomic<uint32_t> deviceChanges_{};
     RawInput input_{requests_, counters_};
     WasapiRenderer renderer_{requests_, diagnostics_, counters_, volume_};
     Settings settings_;
@@ -54,7 +54,7 @@ class Controller {
     void save();
     void publish();
     void halt();
-    void startStream();
+    void startStream(const char* reason);
     void load(const std::filesystem::path& file, bool import = false);
     void drainDiagnostics();
     void log(const std::string& text);

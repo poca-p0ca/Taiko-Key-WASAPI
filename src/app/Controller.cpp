@@ -101,13 +101,15 @@ void Controller::halt() {
     renderer_.stop();
     running_ = false;
 }
-void Controller::startStream() {
+void Controller::startStream(const char* reason) {
     if (!sources_)
         throw std::runtime_error("Load a valid KeyBind.ini before starting");
     halt();
     state_ = L"음원 및 출력 준비 중";
     error_.clear();
     publish();
+    log(std::string("Opening output; reason=") + reason +
+        "; selected=" + (settings_.device.empty() ? std::string("Default") : utf8(settings_.device)));
     try {
         auto info = renderer_.start(settings_.device, settings_.stable, sources_, generation_);
         activeRate_ = info.format.rate;
@@ -178,7 +180,7 @@ void Controller::load(const std::filesystem::path& file, bool import) {
     error_.clear();
     save();
     if (desired_)
-        startStream();
+        startStream("configuration loaded");
     else
         state_ = L"중지";
 }
@@ -209,7 +211,7 @@ void Controller::run() {
         std::filesystem::remove(root_ / L"timings.previous.csv", cleanupError);
         log_.open(root_ / L"session.log", std::ios::binary | std::ios::trunc);
         records_.open(root_ / L"timings.csv", std::ios::binary | std::ios::trunc);
-        log("TaikoKeyWASAPI 0.2.2; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
+        log("TaikoKeyWASAPI 0.2.3; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
             std::to_string(qpcFrequency()));
         using VersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
         auto versionFn =
@@ -239,7 +241,7 @@ void Controller::run() {
                 enumerator->UnregisterEndpointNotificationCallback(notify.Get());
             notify.Reset();
             if (enumerator) {
-                notify.Attach(new DeviceNotifications(wake_.get(), deviceDirty_, settings_.device));
+                notify.Attach(new DeviceNotifications(wake_.get(), deviceChanges_, settings_.device));
                 if (FAILED(enumerator->RegisterEndpointNotificationCallback(notify.Get())))
                     log("Device notifications unavailable; use Refresh");
             }
@@ -280,22 +282,22 @@ void Controller::run() {
                         subscribe();
                         save();
                         if (desired_)
-                            startStream();
+                            startStream("device selected");
                         break;
                     case CommandType::Period:
                         settings_.stable = command.flag;
                         save();
                         if (desired_)
-                            startStream();
+                            startStream("period selected");
                         break;
                     case CommandType::Refresh:
                         refresh();
                         if (desired_ && !running_)
-                            startStream();
+                            startStream("manual refresh");
                         break;
                     case CommandType::Resume:
                         if (desired_)
-                            startStream();
+                            startStream("resume");
                         break;
                     case CommandType::Shutdown:
                         quit = true;
@@ -309,11 +311,16 @@ void Controller::run() {
                     if (!running_)
                         state_ = L"오류";
                 }
-            if (deviceDirty_.exchange(false) && !quit) {
+            if (auto changes = deviceChanges_.exchange(0); changes && !quit) {
                 refresh();
-                retryCount_ = 0;
-                if (desired_)
-                    startStream();
+                // Metadata/list refreshes must not interrupt a healthy stream.
+                if (desired_ && sources_ &&
+                    ((!running_ && (changes & DeviceAvailabilityChanged)) ||
+                     (changes & (SelectedDeviceChanged | DefaultOutputChanged)))) {
+                    retryCount_ = 0;
+                    startStream(changes & DefaultOutputChanged ? "default output changed"
+                                                               : "device availability changed");
+                }
             }
             if (renderer_.failed() && running_) {
                 error_ = wide(renderer_.error());
@@ -324,7 +331,7 @@ void Controller::run() {
                 retryAfter_ = qpc() + qpcFrequency() * 2;
             }
             if (desired_ && !running_ && retryAfter_ && qpc() >= retryAfter_ && !quit) {
-                startStream();
+                startStream("retry after output error");
                 ++retryCount_;
                 retryAfter_ = !running_ && retryCount_ < 3 ? qpc() + qpcFrequency() * 2 : 0;
             }

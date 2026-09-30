@@ -1,3 +1,4 @@
+#include "audio/DeviceCatalog.h"
 #include "audio/PeriodPolicy.h"
 #include "audio/SoundBank.h"
 #include "audio/VoiceMixer.h"
@@ -347,20 +348,61 @@ static void periodTests() {
     require(framesToWrite(32, 0, 64) == 32, "Capacity exceeded");
     rejects([] { framesToWrite(32, 33, 64); }, "Invalid padding accepted");
 }
+static void notificationTests() {
+    Handle wake(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    require(wake.get() != nullptr, "Notification event creation");
+    std::atomic<uint32_t> changes{};
+    DeviceNotifications selected(wake.get(), changes, L"usb");
+    PROPERTYKEY driverProperty{};
+    driverProperty.pid = 1234;
+    for (int i = 0; i < 1000; ++i)
+        selected.OnPropertyValueChanged(L"usb", driverProperty);
+    require(changes.load() == 0, "Driver property storm requested a restart");
+    require(WaitForSingleObject(wake.get(), 0) == WAIT_TIMEOUT, "Property storm woke controller");
+    selected.OnPropertyValueChanged(L"usb", PKEY_Device_FriendlyName);
+    require(changes.exchange(0) == DeviceListChanged, "Rename must only refresh picker");
+    selected.OnDeviceStateChanged(L"other", DEVICE_STATE_ACTIVE);
+    require(changes.exchange(0) == (DeviceListChanged | DeviceAvailabilityChanged),
+            "Unrelated device interrupted selected output");
+    selected.OnDeviceRemoved(L"usb");
+    require(changes.exchange(0) == (DeviceListChanged | DeviceAvailabilityChanged | SelectedDeviceChanged),
+            "Selected removal did not request reconnect");
+    selected.OnDeviceAdded(L"usb");
+    selected.OnPropertyValueChanged(L"usb", PKEY_Device_FriendlyName);
+    require(changes.exchange(0) == (DeviceListChanged | DeviceAvailabilityChanged | SelectedDeviceChanged),
+            "Metadata overwrote pending reconnect");
+    selected.OnDefaultDeviceChanged(eRender, eConsole, L"other");
+    require(changes.load() == 0, "Default change interrupted explicitly selected output");
+    DeviceNotifications followDefault(wake.get(), changes, L"");
+    followDefault.OnPropertyValueChanged(L"usb", driverProperty);
+    followDefault.OnDefaultDeviceChanged(eCapture, eConsole, L"mic");
+    followDefault.OnDefaultDeviceChanged(eRender, eCommunications, L"usb");
+    require(changes.load() == 0, "Unrelated notifications interrupted default output");
+    followDefault.OnDeviceStateChanged(L"mic", DEVICE_STATE_ACTIVE);
+    require(changes.exchange(0) == (DeviceListChanged | DeviceAvailabilityChanged),
+            "Unrelated availability restarted healthy default output");
+    followDefault.OnDefaultDeviceChanged(eRender, eConsole, L"usb");
+    require(changes.exchange(0) == (DeviceListChanged | DefaultOutputChanged),
+            "Default output switch did not request reconnect");
+    followDefault.OnDefaultDeviceChanged(eRender, eConsole, nullptr);
+    require(changes.exchange(0) == (DeviceListChanged | DefaultOutputChanged),
+            "Default output removal was lost");
+}
 int main() {
     temp = std::filesystem::temp_directory_path() /
            (L"TaikoCoreTests-" + std::to_wstring(GetCurrentProcessId()));
     std::filesystem::create_directories(temp);
     int failed = 0;
-    for (auto [name, test] :
-         std::vector<std::pair<const char*, std::function<void()>>>{{"config", parserTests},
-                                                                    {"SPSC queue", queueTests},
-                                                                    {"input state", inputTests},
-                                                                    {"voice mixer", mixerTests},
-                                                                    {"WAV", waveTests},
-                                                                    {"offline resampler", resamplerTests},
-                                                                    {"output format", formatTests},
-                                                                    {"period/render policy", periodTests}}) {
+    for (auto [name, test] : std::vector<std::pair<const char*, std::function<void()>>>{
+             {"config", parserTests},
+             {"SPSC queue", queueTests},
+             {"input state", inputTests},
+             {"voice mixer", mixerTests},
+             {"WAV", waveTests},
+             {"offline resampler", resamplerTests},
+             {"output format", formatTests},
+             {"device notifications", notificationTests},
+             {"period/render policy", periodTests}}) {
         try {
             test();
             std::cout << "PASS " << name << '\n';
