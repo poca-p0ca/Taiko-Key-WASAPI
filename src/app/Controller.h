@@ -23,7 +23,7 @@ struct Command {
     bool flag{};
 };
 class Controller {
-    std::filesystem::path root_, executable_;
+    std::filesystem::path root_;
     std::thread worker_;
     Handle wake_{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
     std::mutex mutex_;
@@ -55,13 +55,12 @@ class Controller {
     void publish();
     void halt();
     void startStream();
-    void load(const std::filesystem::path& file);
+    void load(const std::filesystem::path& file, bool import = false);
     void drainDiagnostics();
     void log(const std::string& text);
 
   public:
-    Controller(std::filesystem::path root, std::filesystem::path executable)
-        : root_(std::move(root)), executable_(std::move(executable)) {}
+    explicit Controller(std::filesystem::path root) : root_(std::move(root)) {}
     ~Controller();
     void start() {
         worker_ = std::thread(&Controller::run, this);

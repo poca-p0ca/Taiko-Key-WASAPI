@@ -10,6 +10,8 @@ Windows 10/11 x64 지원. 별도 ASIO·FlexASIO·FMOD 설치 없이 게임 음�
 
 **Device**는 출력 장치, **Volume**은 볼륨, **Settings**는 상세 설정입니다. 키·음원은 `KeyBind.ini`를 편집한 뒤 **Reload ini File**로 적용합니다.
 
+ZIP 전체를 풀어 EXE 옆의 `KeyBind.ini`와 `HitSounds/` 폴더를 함께 두세요. 설정·음원·로그는 실행 파일 폴더를 사용하며 AppData는 사용하지 않습니다. **INI 가져오기**는 해당 INI와 음원을 이 폴더로 복사합니다.
+
 [Releases](https://github.com/poca-p0ca/Taiko-Key-WASAPI/releases) · [키 설정](docs/KEY_NAMES.md)
 
 ## 실측

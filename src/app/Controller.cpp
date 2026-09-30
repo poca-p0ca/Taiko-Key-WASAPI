@@ -28,21 +28,21 @@ void Controller::log(const std::string& text) {
     }
 }
 void Controller::defaults() {
-    std::filesystem::create_directories(root_ / L"HitSounds");
-    for (auto name : {L"don.wav", L"kat.wav"})
-        if (!std::filesystem::exists(root_ / L"HitSounds" / name))
-            std::filesystem::copy_file(executable_ / L"assets" / L"HitSounds" / name,
-                                       root_ / L"HitSounds" / name);
-    auto ini = root_ / L"KeyBind.ini";
-    if (!std::filesystem::exists(ini)) {
-        std::ofstream out(ini, std::ios::binary);
-        out << "// UTF-8; relative paths are resolved beside this INI.\n[Sound Set]\n1: "
-               "HitSounds/don.wav\n2: HitSounds/kat.wav\n\n[KeyBind]\nZ: 2\nX: 1\nVK_OEM_PERIOD: "
-               "1\nVK_OEM_2: 2\n";
-        if (!out)
-            throw std::runtime_error("Cannot create default KeyBind.ini");
+    settings_.config = root_ / L"KeyBind.ini";
+    // Support replacing only the EXE in a 0.2.1 folder. Never consult AppData,
+    // and never overwrite an existing portable INI or sound.
+    auto legacy = root_ / L"assets";
+    if (!std::filesystem::exists(settings_.config) && std::filesystem::exists(legacy / L"KeyBind.ini")) {
+        std::filesystem::copy_file(legacy / L"KeyBind.ini", settings_.config);
     }
-    settings_.config = ini;
+    for (auto name : {L"don.wav", L"kat.wav"}) {
+        auto target = root_ / L"HitSounds" / name;
+        auto source = legacy / L"HitSounds" / name;
+        if (!std::filesystem::exists(target) && std::filesystem::exists(source)) {
+            std::filesystem::create_directories(target.parent_path());
+            std::filesystem::copy_file(source, target);
+        }
+    }
     std::ifstream in(root_ / L"AppSettings.ini", std::ios::binary);
     std::string line;
     while (std::getline(in, line)) {
@@ -53,8 +53,7 @@ void Controller::defaults() {
         try {
             if (key == "device")
                 settings_.device = wide(value);
-            if (key == "config" && !value.empty())
-                settings_.config = wide(value);
+            // Legacy absolute config= values are deliberately ignored.
             if (key == "stable")
                 settings_.stable = value == "1";
             if (key == "volume")
@@ -68,8 +67,8 @@ void Controller::defaults() {
 void Controller::save() {
     auto path = root_ / L"AppSettings.ini", temp = root_ / L"AppSettings.tmp";
     std::ofstream out(temp, std::ios::binary);
-    out << "device=" << utf8(settings_.device) << "\nconfig=" << utf8(settings_.config.wstring())
-        << "\nstable=" << settings_.stable << "\nvolume=" << volume_.load() << "\n";
+    out << "device=" << utf8(settings_.device) << "\nstable=" << settings_.stable
+        << "\nvolume=" << volume_.load() << "\n";
     out.close();
     if (!out || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         log("Could not persist application settings");
@@ -131,12 +130,45 @@ void Controller::startStream() {
                      : L"오류 — 출력을 시작하지 못했습니다";
     }
 }
-void Controller::load(const std::filesystem::path& file) {
+void Controller::load(const std::filesystem::path& file, bool import) {
     auto candidate = readConfig(file);
     auto bank = std::make_shared<SourceBank>(loadSources(candidate));
     if (running_ && activeRate_) {
         auto validated = convertBank(*bank, activeRate_);
         (void)validated;
+    }
+    if (import) {
+        // Import is a copy, not a persistent reference to another computer/folder.
+        // Validate and copy everything before replacing the live portable INI.
+        auto relative = std::filesystem::path(L"HitSounds") / (L"imported-" + std::to_wstring(qpc()));
+        auto destination = root_ / relative;
+        if (!std::filesystem::create_directories(destination))
+            throw std::runtime_error("Cannot create imported sound directory");
+        std::ostringstream text;
+        text << "// UTF-8; paths are relative to this KeyBind.ini.\n[Sound Set]\n";
+        for (const auto& sound : candidate.sounds) {
+            auto name = std::to_wstring(sound.id) + L".wav";
+            std::filesystem::copy_file(sound.path, destination / name);
+            text << sound.id << ": " << utf8((relative / name).generic_wstring()) << '\n';
+        }
+        text << "\n[KeyBind]\n";
+        for (size_t key = 0; key < candidate.keys.size(); ++key)
+            if (candidate.keys[key])
+                for (const auto& [name, code] : keyNames())
+                    if (code == key) {
+                        text << name << ": " << candidate.keys[key] << '\n';
+                        break;
+                    }
+        auto target = root_ / L"KeyBind.ini";
+        auto imported = parseConfig(text.str(), target);
+        auto temp = root_ / L"KeyBind.import.tmp";
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        out << text.str();
+        out.close();
+        if (!out ||
+            !MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+            throw std::runtime_error("Cannot save imported KeyBind.ini beside the executable");
+        candidate = std::move(imported);
     }
     // Decode every file before touching the current stream/configuration.
     halt();
@@ -177,7 +209,7 @@ void Controller::run() {
         std::filesystem::remove(root_ / L"timings.previous.csv", cleanupError);
         log_.open(root_ / L"session.log", std::ios::binary | std::ios::trunc);
         records_.open(root_ / L"timings.csv", std::ios::binary | std::ios::trunc);
-        log("TaikoKeyWASAPI 0.2.1; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
+        log("TaikoKeyWASAPI 0.2.2; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
             std::to_string(qpcFrequency()));
         using VersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
         auto versionFn =
@@ -241,7 +273,7 @@ void Controller::run() {
                         load(settings_.config);
                         break;
                     case CommandType::Import:
-                        load(command.text);
+                        load(command.text, true);
                         break;
                     case CommandType::Device:
                         settings_.device = command.text;

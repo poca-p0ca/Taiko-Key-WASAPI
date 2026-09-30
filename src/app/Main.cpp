@@ -4,7 +4,6 @@
 #include <commdlg.h>
 #include <memory>
 #include <shellapi.h>
-#include <shlobj.h>
 
 namespace {
 using namespace taiko;
@@ -309,13 +308,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
         font = CreateFontIndirectW(&metrics.lfMessageFont);
         wchar_t exe[32768]{};
-        GetModuleFileNameW(nullptr, exe, 32768);
-        PWSTR local{};
-        if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local)))
-            throw std::runtime_error("Cannot locate LocalAppData");
-        std::filesystem::path root = std::filesystem::path(local) / L"TaikoKeyWASAPI";
-        CoTaskMemFree(local);
-        app = std::make_unique<taiko::Controller>(root, std::filesystem::path(exe).parent_path());
+        DWORD length = GetModuleFileNameW(nullptr, exe, 32768);
+        if (!length || length >= 32768)
+            throw std::runtime_error("Cannot locate application directory");
+        // Resolve from the EXE, not the shortcut's working directory or AppData.
+        app = std::make_unique<taiko::Controller>(std::filesystem::path(exe).parent_path());
         WNDCLASSW cls{};
         cls.hInstance = instance;
         cls.style = CS_HREDRAW | CS_VREDRAW;
