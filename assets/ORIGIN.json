@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/4dblackhole/Taiko-Key-ASIO",
+  "commit": "c3ed9a669e3369dd149171fba8fc06e84589d316",
+  "license_status": "No LICENSE file found at pinned commit; user explicitly requested original audio",
+  "files": {
+    "don.wav": {
+      "bytes": 77832,
+      "sha256": "21a668d6f2af029dbce02317a6235b94f5764b40cbcbe28541775724bad62b46",
+      "url": "https://raw.githubusercontent.com/4dblackhole/Taiko-Key-ASIO/c3ed9a669e3369dd149171fba8fc06e84589d316/HitSounds/don.wav"
+    },
+    "kat.wav": {
+      "bytes": 31176,
+      "sha256": "523626eb90e6e8e2463a4b7f09cb18bdf7403f885940ea8e05368707c9899b2b",
+      "url": "https://raw.githubusercontent.com/4dblackhole/Taiko-Key-ASIO/c3ed9a669e3369dd149171fba8fc06e84589d316/HitSounds/kat.wav"
+    }
+  }
+}

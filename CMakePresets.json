@@ -1,0 +1,15 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {"name":"windows-msvc-x64","generator":"Visual Studio 17 2022","architecture":"x64","binaryDir":"${sourceDir}/build/msvc"},
+    {"name":"windows-portable-clang","generator":"Ninja","binaryDir":"${sourceDir}/build/portable","cacheVariables":{"CMAKE_BUILD_TYPE":"Release","CMAKE_C_COMPILER":"${sourceDir}/tools/toolchain/llvm-mingw-20260922-ucrt-x86_64/bin/clang.exe","CMAKE_CXX_COMPILER":"${sourceDir}/tools/toolchain/llvm-mingw-20260922-ucrt-x86_64/bin/clang++.exe","CMAKE_RC_COMPILER":"${sourceDir}/tools/toolchain/llvm-mingw-20260922-ucrt-x86_64/bin/llvm-windres.exe","CMAKE_MAKE_PROGRAM":"${sourceDir}/tools/toolchain/ninja.exe"}}
+  ],
+  "buildPresets": [
+    {"name":"windows-msvc-x64-release","configurePreset":"windows-msvc-x64","configuration":"Release","jobs":2},
+    {"name":"windows-portable-clang-release","configurePreset":"windows-portable-clang","jobs":2}
+  ],
+  "testPresets": [
+    {"name":"windows-msvc-x64-release","configurePreset":"windows-msvc-x64","configuration":"Release","output":{"outputOnFailure":true}},
+    {"name":"windows-portable-clang-release","configurePreset":"windows-portable-clang","output":{"outputOnFailure":true}}
+  ]
+}
