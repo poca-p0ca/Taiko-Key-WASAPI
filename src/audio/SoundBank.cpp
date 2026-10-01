@@ -17,23 +17,36 @@ static uint32_t u32(const std::vector<uint8_t>& b, size_t p) {
 static uint16_t u16(const std::vector<uint8_t>& b, size_t p) {
     return uint16_t(b[p]) | uint16_t(b[p + 1] << 8);
 }
-static void validateRiff(const std::vector<uint8_t>& b) {
+struct RiffLayout {
+    size_t fmt{}, fmtSize{}, data{}, dataSize{};
+};
+// Validates fmt/data and returns where they are. The RIFF size field is advisory:
+// some editors write it wrong, append tags after the RIFF body or omit the final
+// pad byte, so chunks are checked against the real file size instead.
+static RiffLayout validateRiff(const std::vector<uint8_t>& b) {
     if (b.size() < 12 || memcmp(b.data(), "RIFF", 4) || memcmp(b.data() + 8, "WAVE", 4))
         throw std::runtime_error("Expected RIFF/WAVE");
-    uint64_t end = uint64_t(u32(b, 4)) + 8;
-    if (end != b.size())
-        throw std::runtime_error("Truncated or inconsistent RIFF size");
+    const size_t end = b.size();
+    RiffLayout layout;
     bool fmt = false, data = false;
-    uint32_t dataSize = 0;
     uint16_t align = 0;
     for (size_t p = 12; p < end;) {
-        if (end - p < 8)
+        if (end - p < 8) {
+            if (fmt && data)
+                break; // trailing bytes after the last chunk
             throw std::runtime_error("Truncated chunk header");
+        }
         uint32_t n = u32(b, p + 4);
         size_t start = p + 8;
-        uint64_t next = uint64_t(start) + n + (n & 1);
-        if (next > end)
+        bool isData = !memcmp(b.data() + p, "data", 4);
+        // Streaming writers can leave a 0xFFFFFFFF placeholder on the final data chunk.
+        if (isData && fmt && !data && n == 0xffffffff)
+            n = static_cast<uint32_t>(end - start);
+        if (n > end - start) {
+            if (fmt && data)
+                break; // unrelated trailing data, e.g. tags appended after the RIFF body
             throw std::runtime_error("Truncated chunk/padding");
+        }
         if (!memcmp(b.data() + p, "fmt ", 4)) {
             if (fmt || n < 16)
                 throw std::runtime_error("Duplicate or short fmt chunk");
@@ -57,20 +70,56 @@ static void validateRiff(const std::vector<uint8_t>& b) {
                     throw std::runtime_error("Unsupported WAV speaker layout");
             }
             if ((ch != 1 && ch != 2) || rate < 8000 || rate > 384000 || (tag != 1 && tag != 3) ||
-                (tag == 3 ? bits != 32 : (bits != 16 && bits != 24 && bits != 32)) ||
+                (tag == 3 ? (bits != 32 && bits != 64)
+                          : (bits != 8 && bits != 16 && bits != 24 && bits != 32)) ||
                 align != ch * (bits / 8) || u32(b, start + 8) != rate * align)
                 throw std::runtime_error("Unsupported or inconsistent WAV format");
+            layout.fmt = start;
+            layout.fmtSize = n;
         }
-        if (!memcmp(b.data() + p, "data", 4)) {
+        if (isData) {
             if (data || !n)
                 throw std::runtime_error("Duplicate/empty data chunk");
             data = true;
-            dataSize = n;
+            layout.data = start;
+            layout.dataSize = n;
         }
-        p = static_cast<size_t>(next);
+        p = start + n + (n & 1); // may pass end when the final odd chunk lacks its pad byte
     }
-    if (!fmt || !data || !align || dataSize % align)
-        throw std::runtime_error("Missing or misaligned WAV data");
+    if (!fmt || !data || !align)
+        throw std::runtime_error("Missing WAV fmt or data chunk");
+    // A partially written final frame cannot be played; drop it.
+    layout.dataSize -= layout.dataSize % align;
+    if (!layout.dataSize)
+        throw std::runtime_error("WAV data shorter than one frame");
+    return layout;
+}
+// dr_wav's non-metadata mode stops at data and trusts the header sizes. Hand it a
+// minimal RIFF holding only the validated fmt and data chunks.
+static std::vector<uint8_t> canonicalRiff(const std::vector<uint8_t>& b, const RiffLayout& l) {
+    std::vector<uint8_t> out;
+    out.reserve(28 + l.fmtSize + 1 + l.dataSize);
+    auto put = [&](const void* p, size_t n) {
+        auto* bytes = static_cast<const uint8_t*>(p);
+        out.insert(out.end(), bytes, bytes + n);
+    };
+    auto put32 = [&](size_t v) {
+        uint8_t le[4]{uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24)};
+        put(le, 4);
+    };
+    put("RIFF", 4);
+    put32(4 + 8 + l.fmtSize + (l.fmtSize & 1) + 8 + l.dataSize + (l.dataSize & 1));
+    put("WAVEfmt ", 8);
+    put32(l.fmtSize);
+    put(b.data() + l.fmt, l.fmtSize);
+    if (l.fmtSize & 1)
+        out.push_back(0);
+    put("data", 4);
+    put32(l.dataSize);
+    put(b.data() + l.data, l.dataSize);
+    if (l.dataSize & 1)
+        out.push_back(0);
+    return out;
 }
 SourceBank loadSources(const KeyConfig& config) {
     SourceBank bank;
@@ -86,18 +135,7 @@ SourceBank loadSources(const KeyConfig& config) {
             std::vector<uint8_t> bytes(static_cast<size_t>(size));
             if (!file.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
                 throw std::runtime_error("Cannot read WAV");
-            validateRiff(bytes);
-            // dr_wav's non-metadata mode stops at data. Normalize only chunk order so
-            // valid data-before-fmt RIFFs work without enabling arbitrary metadata decoding.
-            for (size_t p = 12; p < bytes.size();) {
-                size_t end = p + 8 + u32(bytes, p + 4) + (u32(bytes, p + 4) & 1);
-                if (!memcmp(bytes.data() + p, "fmt ", 4)) {
-                    std::rotate(bytes.begin() + 12, bytes.begin() + static_cast<ptrdiff_t>(p),
-                                bytes.begin() + static_cast<ptrdiff_t>(end));
-                    break;
-                }
-                p = end;
-            }
+            bytes = canonicalRiff(bytes, validateRiff(bytes));
             drwav decoder{};
             if (!drwav_init_memory(&decoder, bytes.data(), bytes.size(), nullptr))
                 throw std::runtime_error("WAV decoder rejected file");

@@ -79,11 +79,16 @@ static std::vector<uint8_t> wave(unsigned bits, bool floating, unsigned channels
         for (int f = 0; f < 4; ++f)
             for (unsigned c = 0; c < channels; ++c) {
                 float v = f == 1 ? .5f : f == 2 ? -.5f : 0;
-                uint32_t n{};
-                if (floating)
+                uint64_t n{};
+                if (floating && bits == 64) {
+                    double d = v;
+                    memcpy(&n, &d, 8);
+                } else if (floating)
                     memcpy(&n, &v, 4);
+                else if (bits == 8)
+                    n = static_cast<uint64_t>(128 + v * 128); // 8-bit WAV PCM is unsigned
                 else
-                    n = static_cast<uint32_t>(static_cast<int64_t>(double(v) * (uint64_t(1) << (bits - 1))));
+                    n = static_cast<uint64_t>(static_cast<int64_t>(double(v) * (uint64_t(1) << (bits - 1))));
                 for (unsigned k = 0; k < bits / 8; ++k)
                     b.push_back(uint8_t(n >> (k * 8)));
             }
@@ -234,7 +239,7 @@ static void mixerTests() {
     expectSample(out[1], .2f);
 }
 static void waveTests() {
-    for (unsigned bits : {16u, 24u, 32u})
+    for (unsigned bits : {8u, 16u, 24u, 32u})
         for (unsigned channels : {1u, 2u})
             for (bool ext : {false, true})
                 for (bool reverse : {false, true}) {
@@ -247,13 +252,48 @@ static void waveTests() {
                                                  std::to_string(ext) + " reverse=" + std::to_string(reverse));
                     }
                     require(bank.sounds[0].frames() == 4, "Wrong WAV length");
-                    expectSample(bank.sounds[0].pcm[channels], .5f);
+                    // dr_wav maps unsigned 8-bit as u8/255*2-1, so 192 decodes to ~0.506.
+                    expectSample(bank.sounds[0].pcm[channels], .5f, bits == 8 ? .01f : 1e-5f);
                 }
-    for (bool ext : {false, true}) {
-        auto bank = decode(wave(32, true, 2, ext));
-        expectSample(bank.sounds[0].pcm[2], .5f);
-    }
+    for (unsigned bits : {32u, 64u})
+        for (bool ext : {false, true}) {
+            auto bank = decode(wave(bits, true, 2, ext));
+            expectSample(bank.sounds[0].pcm[2], .5f);
+        }
+    auto setRiffSize = [](std::vector<uint8_t>& b, uint32_t size) {
+        for (int i = 0; i < 4; ++i)
+            b[4 + i] = uint8_t(size >> (i * 8));
+    };
+    auto lenient = [&](std::vector<uint8_t> bytes, const char* message) {
+        SourceBank bank;
+        try {
+            bank = decode(bytes);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string(message) + ": " + e.what());
+        }
+        require(bank.sounds[0].frames() == 4, message);
+        expectSample(bank.sounds[0].pcm[1], .5f);
+    };
     auto bytes = wave(16, false, 1);
+    setRiffSize(bytes, 0);
+    lenient(bytes, "Wrong RIFF size rejected");
+    bytes = wave(16, false, 1);
+    bytes.insert(bytes.end(), {'I', 'D', '3', 3, 0, 0, 0, 0, 0, 0x7f});
+    lenient(bytes, "Tag appended after RIFF body rejected");
+    bytes = wave(16, false, 1);
+    bytes.insert(bytes.end(), {'L', 'I', 'S', 'T', 3, 0, 0, 0, 'a', 'b', 'c'});
+    setRiffSize(bytes, uint32_t(bytes.size() - 8));
+    lenient(bytes, "Final odd chunk without pad byte rejected");
+    bytes = wave(16, false, 1);
+    for (size_t i = 12; i + 8 < bytes.size(); ++i)
+        if (!memcmp(bytes.data() + i, "data", 4)) {
+            uint32_t placeholder = 0xffffffff;
+            memcpy(bytes.data() + i + 4, &placeholder, 4);
+            break;
+        }
+    bytes.push_back(0x12); // half of a frame left by an interrupted stream writer
+    lenient(bytes, "Streaming data-size placeholder rejected");
+    bytes = wave(16, false, 1);
     bytes.pop_back();
     rejects([&] { decode(bytes); }, "Truncated WAV accepted");
     bytes = wave(16, false, 1);
