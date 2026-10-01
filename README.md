@@ -1,6 +1,6 @@
 # Taiko Key WASAPI
 
-[Taiko-Key-ASIO](https://github.com/4dblackhole/Taiko-Key-ASIO)의 **비공식 WASAPI 카피 버전**입니다. 원작자의 허락을 받아 원본 UI·동/캇 음원을 그대로 사용하고, 입력·오디오 엔진을 C++20 / Raw Input / WASAPI 저지연 공유 모드로 새로 구현했습니다.
+[Taiko-Key-ASIO](https://github.com/4dblackhole/Taiko-Key-ASIO)의 **비공식 WASAPI 카피 버전**입니다. 원본 UI·동/캇 음원을 그대로 사용하고, 입력·오디오 엔진을 C++20 / Raw Input / WASAPI 저지연 공유 모드로 새로 구현했습니다.
 
 Windows 10/11 x64 지원. 별도 ASIO·FlexASIO·FMOD 설치 없이 게임 음악과 함께 타격음을 재생하며, 키·음원·출력 장치·볼륨 설정과 연타·동시 입력을 지원합니다.
 
