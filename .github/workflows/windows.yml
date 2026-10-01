@@ -18,8 +18,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Configure
         run: cmake --preset windows-msvc-x64
-      - name: Build release (two CPU jobs, no app launch or tests)
-        run: cmake --build --preset windows-msvc-x64-release --target TaikoKeyWASAPI
+      - name: Build release app and core tests (two CPU jobs)
+        run: cmake --build --preset windows-msvc-x64-release --target TaikoKeyWASAPI core_tests
+      - name: Run hardware-independent core tests
+        run: ctest --preset windows-msvc-x64-release
       - name: Package ZIP and checksum
         id: package
         shell: pwsh

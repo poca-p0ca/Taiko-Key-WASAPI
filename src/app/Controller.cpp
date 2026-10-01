@@ -5,7 +5,7 @@
 #include <winternl.h>
 
 namespace taiko {
-Controller::~Controller() {
+void Controller::shutdown() {
     if (worker_.joinable()) {
         post({CommandType::Shutdown, {}, {}});
         worker_.join();
@@ -56,6 +56,8 @@ void Controller::defaults() {
             // Legacy absolute config= values are deliberately ignored.
             if (key == "stable")
                 settings_.stable = value == "1";
+            if (key == "diagnostics")
+                settings_.diagnostics = value == "1";
             if (key == "volume")
                 volume_.store(std::clamp(std::stof(value), 0.f, 1.f));
         } catch (...) { /* Preserve safe defaults for malformed application preferences. */
@@ -68,7 +70,7 @@ void Controller::save() {
     auto path = root_ / L"AppSettings.ini", temp = root_ / L"AppSettings.tmp";
     std::ofstream out(temp, std::ios::binary);
     out << "device=" << utf8(settings_.device) << "\nstable=" << settings_.stable
-        << "\nvolume=" << volume_.load() << "\n";
+        << "\ndiagnostics=" << settings_.diagnostics << "\nvolume=" << volume_.load() << "\n";
     out.close();
     if (!out || !MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         log("Could not persist application settings");
@@ -90,6 +92,8 @@ void Controller::publish() {
     snapshot_.settings = settings_;
     snapshot_.bindings = wide(bindingsText(config_));
     snapshot_.running = running_;
+    snapshot_.warning = warning_;
+    snapshot_.warningId = warningId_;
     snapshot_.revision = ++revision_;
     snapshot_.previewDon =
         std::any_of(config_.sounds.begin(), config_.sounds.end(), [](const auto& s) { return s.id == 1; });
@@ -99,7 +103,7 @@ void Controller::publish() {
 void Controller::halt() {
     input_.configure(config_.keys, ++generation_, false);
     renderer_.stop();
-    running_ = false;
+    running_ = fallback_ = false;
 }
 void Controller::startStream(const char* reason) {
     if (!sources_)
@@ -118,7 +122,19 @@ void Controller::startStream(const char* reason) {
         counters_.restarts.fetch_add(1);
         streamDetails_ = describeStream(info);
         log(streamDetails_);
-        state_ = !info.client3       ? L"일반 공유로 대체"
+        fallback_ = !info.client3;
+        if (fallback_) {
+            log(lowLatencyFailureLog(info));
+            // Alert once per device and cause; reconnects with the same result only log.
+            auto key = utf8(info.deviceId) + "|" + std::to_string(info.lowLatencyResult);
+            if (key != lastFallback_) {
+                lastFallback_ = key;
+                warning_ = lowLatencyFailureAlert(info);
+                ++warningId_;
+            }
+        } else
+            lastFallback_.clear();
+        state_ = !info.client3       ? L"저지연 사용 불가 — 일반 공유 모드"
                  : info.shortened    ? L"저지연 공유"
                  : info.currentKnown ? L"공유 — 주기 단축 없음"
                                      : L"공유 — 현재 주기 확인 불가";
@@ -184,8 +200,39 @@ void Controller::load(const std::filesystem::path& file, bool import) {
     else
         state_ = L"중지";
 }
+void Controller::setRecording(bool enabled) {
+    settings_.diagnostics = enabled;
+    auto path = root_ / L"timings.csv";
+    if (!enabled) {
+        recording_.store(false, std::memory_order_relaxed);
+        records_.close();
+        diagnostics_.discard();
+        return;
+    }
+    if (recording_.load(std::memory_order_relaxed))
+        return;
+    // Each enable starts a fresh file so the CSV header stays at the top.
+    std::error_code ignored;
+    std::filesystem::remove(root_ / L"timings.previous.csv", ignored);
+    diagnostics_.discard();
+    records_.clear();
+    records_.open(path, std::ios::binary | std::ios::trunc);
+    rows_ = 0;
+    if (!records_) {
+        // Leave the option off so the checkbox shows that nothing is being recorded.
+        records_.close();
+        settings_.diagnostics = false;
+        log("Cannot open timings.csv; timing records stay off");
+        return;
+    }
+    recording_.store(true, std::memory_order_relaxed);
+}
 void Controller::drainDiagnostics() {
     DiagnosticRecord r{};
+    if (!records_.is_open()) {
+        diagnostics_.discard();
+        return;
+    }
     for (size_t count = 0; count < 16384 && diagnostics_.pop(r); ++count) {
         if (rows_ >= 500000) {
             records_.close();
@@ -207,11 +254,8 @@ void Controller::run() {
     try {
         ComScope com;
         defaults();
-        std::error_code cleanupError;
-        std::filesystem::remove(root_ / L"timings.previous.csv", cleanupError);
         log_.open(root_ / L"session.log", std::ios::binary | std::ios::trunc);
-        records_.open(root_ / L"timings.csv", std::ios::binary | std::ios::trunc);
-        log("TaikoKeyWASAPI 0.2.3; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
+        log("TaikoKeyWASAPI " TAIKO_VERSION "; build=" __DATE__ " " __TIME__ "; x64; QPC frequency=" +
             std::to_string(qpcFrequency()));
         using VersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
         auto versionFn =
@@ -223,8 +267,16 @@ void Controller::run() {
                 log("Windows=" + std::to_string(v.dwMajorVersion) + "." + std::to_string(v.dwMinorVersion) +
                     " build " + std::to_string(v.dwBuildNumber));
         }
-        if (!log_ || !records_)
-            error_ = L"진단 로그 파일을 기록할 수 없습니다.";
+        if (!log_)
+            error_ = L"session.log를 기록할 수 없습니다. 실행 파일 폴더의 쓰기 권한을 확인하세요.";
+        if (settings_.diagnostics)
+            setRecording(true);
+        else {
+            // Timing records are opt-in; remove files left by versions that always recorded.
+            std::error_code ignored;
+            std::filesystem::remove(root_ / L"timings.csv", ignored);
+            std::filesystem::remove(root_ / L"timings.previous.csv", ignored);
+        }
         input_.start();
         try {
             load(settings_.config);
@@ -290,10 +342,20 @@ void Controller::run() {
                         if (desired_)
                             startStream("period selected");
                         break;
+                    case CommandType::Diagnostics:
+                        setRecording(command.flag);
+                        save();
+                        break;
+                    case CommandType::Save:
+                        save();
+                        break;
                     case CommandType::Refresh:
                         refresh();
-                        if (desired_ && !running_)
-                            startStream("manual refresh");
+                        // Also retry the low-latency path after a fallback, e.g. once another app released
+                        // the device.
+                        if (desired_ && (!running_ || fallback_))
+                            startStream(running_ ? "manual refresh after low-latency fallback"
+                                                 : "manual refresh");
                         break;
                     case CommandType::Resume:
                         if (desired_)

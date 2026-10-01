@@ -7,16 +7,16 @@ namespace taiko {
 struct Settings {
     std::wstring device;
     std::filesystem::path config;
-    bool stable{};
+    bool stable{}, diagnostics{};
 };
 struct Snapshot {
-    std::wstring status = L"준비 중", details, error, bindings;
+    std::wstring status = L"준비 중", details, error, bindings, warning;
     Settings settings;
     std::vector<Device> devices;
     bool running{}, previewDon{}, previewKat{};
-    uint64_t revision{};
+    uint64_t revision{}, warningId{}; // warningId changes once per new low-latency fallback
 };
-enum class CommandType { Reload, Import, Device, Period, Refresh, Resume, Shutdown };
+enum class CommandType { Reload, Import, Device, Period, Diagnostics, Save, Refresh, Resume, Shutdown };
 struct Command {
     CommandType type;
     std::wstring text;
@@ -33,19 +33,22 @@ class Controller {
     DiagnosticQueue diagnostics_;
     Counters counters_;
     std::atomic<float> volume_{.25f};
+    std::atomic<bool> recording_{};
     std::atomic<uint32_t> deviceChanges_{};
     RawInput input_{requests_, counters_};
-    WasapiRenderer renderer_{requests_, diagnostics_, counters_, volume_};
+    WasapiRenderer renderer_{requests_, diagnostics_, counters_, volume_, recording_};
     Settings settings_;
     KeyConfig config_;
     std::shared_ptr<const SourceBank> sources_;
     uint32_t generation_{};
-    bool desired_{true}, running_{};
+    bool desired_{true}, running_{}, fallback_{};
     uint64_t revision_{};
     uint32_t activeRate_{};
     unsigned retryCount_{};
     int64_t retryAfter_{};
-    std::string streamDetails_;
+    std::string streamDetails_, lastFallback_;
+    std::wstring warning_;
+    uint64_t warningId_{};
     std::ofstream records_, log_;
     uint64_t rows_{};
     std::wstring state_ = L"중지", error_;
@@ -56,15 +59,20 @@ class Controller {
     void halt();
     void startStream(const char* reason);
     void load(const std::filesystem::path& file, bool import = false);
+    void setRecording(bool enabled);
     void drainDiagnostics();
     void log(const std::string& text);
 
   public:
     explicit Controller(std::filesystem::path root) : root_(std::move(root)) {}
-    ~Controller();
+    ~Controller() {
+        shutdown();
+    }
     void start() {
         worker_ = std::thread(&Controller::run, this);
     }
+    // Stops audio/input and persists settings. Safe to call more than once.
+    void shutdown();
     void post(Command command);
     Snapshot snapshot() {
         std::lock_guard lock(mutex_);
