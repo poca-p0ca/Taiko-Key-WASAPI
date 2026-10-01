@@ -129,6 +129,7 @@ void WasapiRenderer::run(std::wstring selected, bool stable, std::shared_ptr<con
                 UINT32 period{};
                 if (SUCCEEDED(client3->GetCurrentSharedModeEnginePeriod(&current.p, &period))) {
                     // A bounded retry on a newly activated object, using the engine's reported format.
+                    info.lockedRetry = true;
                     fresh();
                     format.reset();
                     format.p = current.p;
@@ -150,6 +151,7 @@ void WasapiRenderer::run(std::wstring selected, bool stable, std::shared_ptr<con
         }
         info.client3 = SUCCEEDED(low);
         if (!info.client3) {
+            info.lowLatencyResult = low;
             info.fallback = "IAudioClient3 initialization: " + hexHr(low);
             fresh();
             check(client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 0, 0,
@@ -248,9 +250,12 @@ void WasapiRenderer::run(std::wstring selected, bool stable, std::shared_ptr<con
                     break;
                 }
                 PlayRequest request{};
+                const bool recording = recording_.load(std::memory_order_relaxed);
                 for (size_t count = 0; count < 256 && requests_.pop(request); ++count)
                     if (request.generation == generation) {
                         mixer.trigger(bank.find(request.sound));
+                        if (!recording)
+                            continue;
                         DiagnosticRecord record{1,
                                                 padding,
                                                 frames,
@@ -279,7 +284,8 @@ void WasapiRenderer::run(std::wstring selected, bool stable, std::shared_ptr<con
             auto stolen = mixer.stolen();
             counters_.stolen.fetch_add(stolen - previousStolen, std::memory_order_relaxed);
             previousStolen = stolen;
-            if (!diagnostics_.push({0, padding, frames, generation, at, duration, interval, 0, 0}))
+            if (recording_.load(std::memory_order_relaxed) &&
+                !diagnostics_.push({0, padding, frames, generation, at, duration, interval, 0, 0}))
                 counters_.diagnosticDrops.fetch_add(1, std::memory_order_relaxed);
         }
         check(renderError, failure);
@@ -293,6 +299,59 @@ void WasapiRenderer::run(std::wstring selected, bool stable, std::shared_ptr<con
         if (!promised)
             ready.set_exception(std::current_exception());
     }
+}
+namespace {
+struct FallbackCause {
+    const char* log;
+    const wchar_t* alert;
+};
+FallbackCause fallbackCause(const StreamInfo& i) {
+    switch (i.lowLatencyResult) {
+    case E_NOINTERFACE:
+    case E_NOTIMPL:
+        return {"IAudioClient3 is not available",
+                L"Windows 오디오 엔진에서 저지연 공유 모드(IAudioClient3)를 사용할 수 없습니다."};
+    case AUDCLNT_E_ENGINE_PERIODICITY_LOCKED:
+        return {"another stream locked the engine period",
+                L"다른 프로그램이 이 장치의 오디오 엔진 주기를 고정하고 있습니다."};
+    case AUDCLNT_E_ENGINE_FORMAT_LOCKED:
+        return {"another stream locked the engine format",
+                L"다른 프로그램이 이 장치의 오디오 엔진 포맷을 고정하고 있습니다."};
+    case AUDCLNT_E_INVALID_DEVICE_PERIOD:
+        if (i.lockedRetry)
+            return {"the period locked by another stream is not usable",
+                    L"다른 프로그램이 고정한 엔진 주기로는 저지연 스트림을 열 수 없습니다."};
+        return {"the device rejected the requested period", L"장치가 요청한 엔진 주기를 거부했습니다."};
+    case AUDCLNT_E_UNSUPPORTED_FORMAT:
+        return {"the device rejected the shared mix format",
+                L"장치가 저지연 스트림의 출력 포맷을 거부했습니다."};
+    case E_INVALIDARG:
+        return {"invalid period range or arguments",
+                L"장치가 보고한 엔진 주기 범위가 올바르지 않거나 요청이 거부되었습니다."};
+    default:
+        return {"IAudioClient3 initialization failed", L"저지연 스트림 초기화가 실패했습니다."};
+    }
+}
+double periodMs(const StreamInfo& i) {
+    return i.format.rate ? double(i.requested) * 1000 / i.format.rate : 0;
+}
+} // namespace
+std::string lowLatencyFailureLog(const StreamInfo& i) {
+    std::ostringstream o;
+    o << "LOW-LATENCY UNAVAILABLE: " << fallbackCause(i).log << " (" << hexHr(i.lowLatencyResult)
+      << "); device=" << utf8(i.name) << "; playing in standard shared mode, engine period " << i.requested
+      << " frames (" << std::fixed << std::setprecision(3) << periodMs(i) << " ms)";
+    return o.str();
+}
+std::wstring lowLatencyFailureAlert(const StreamInfo& i) {
+    std::wostringstream o;
+    o << L"저지연 모드를 사용할 수 없었습니다.\n\n장치: " << i.name << L"\n원인: " << fallbackCause(i).alert
+      << L" (" << wide(hexHr(i.lowLatencyResult)) << L")\n현재: 일반 공유 모드로 재생 중, 엔진 주기 "
+      << i.requested << L" frames (" << std::fixed << std::setprecision(3) << periodMs(i)
+      << L" ms)\n\n재생은 계속되지만 저지연 모드보다 지연이 길 수 있습니다. "
+         L"다른 오디오 프로그램을 종료하거나 출력 장치를 바꾼 뒤 Settings에서 장치 새로고침을 눌러 보세요. "
+         L"자세한 내용은 Settings의 진단 내용과 session.log에 있습니다.";
+    return o.str();
 }
 std::string describeStream(const StreamInfo& i) {
     std::ostringstream o;

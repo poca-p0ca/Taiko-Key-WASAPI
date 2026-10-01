@@ -21,13 +21,16 @@ enum {
     EditButton,
     FolderButton,
     RefreshButton,
-    SettingsMenu
+    SettingsMenu,
+    DiagnosticsBox
 };
 std::unique_ptr<Controller> app;
 HWND mainWindow{}, settingsWindow{}, mainVolume{}, mainSlider{};
-HWND periods{}, statusText{}, pathText{}, keysText{}, detailsText{}, errorText{}, volumeText{}, slider{};
+HWND periods{}, statusText{}, pathText{}, keysText{}, detailsText{}, errorText{}, volumeText{}, slider{},
+    diagnosticsBox{};
 HFONT font{};
 bool volumeInitialized{};
+uint64_t shownWarning{};
 
 struct DevicePicker {
     HWND window{};
@@ -78,15 +81,30 @@ HWND control(HWND parent, LPCWSTR cls, LPCWSTR text, DWORD style, int x, int y, 
     SendMessageW(w, WM_SETFONT, reinterpret_cast<WPARAM>(customFont ? customFont : font), TRUE);
     return w;
 }
-void setText(HWND w, const std::wstring& text) {
+bool setText(HWND w, const std::wstring& text) {
     if (!w)
-        return;
+        return false;
     int n = GetWindowTextLengthW(w);
     std::wstring current(n + 1, 0);
     GetWindowTextW(w, current.data(), n + 1);
     current.resize(n);
-    if (current != text)
-        SetWindowTextW(w, text.c_str());
+    if (current == text)
+        return false;
+    SetWindowTextW(w, text.c_str());
+    return true;
+}
+// Counter refreshes replace the whole text; restore the reader's scroll and selection.
+void setScrolledText(HWND w, const std::wstring& text) {
+    if (!w)
+        return;
+    auto first = SendMessageW(w, EM_GETFIRSTVISIBLELINE, 0, 0);
+    DWORD start{}, end{};
+    SendMessageW(w, EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+    if (!setText(w, text))
+        return;
+    SendMessageW(w, EM_SETSEL, start, end);
+    auto now = SendMessageW(w, EM_GETFIRSTVISIBLELINE, 0, 0);
+    SendMessageW(w, EM_LINESCROLL, 0, first - now);
 }
 void setSlider(HWND w, int value) {
     if (w && SendMessageW(w, TBM_GETPOS, 0, 0) != value)
@@ -103,6 +121,12 @@ void update() {
     auto s = app->snapshot();
     mainDevices.update(s);
     setText(mainWindow, !s.error.empty() ? L"Taiko Key WASAPI — 설정 확인 필요" : L"Taiko Key WASAPI");
+    if (s.warningId != shownWarning) {
+        // Mark first: MessageBox pumps messages, so the timer re-enters update() while it is open.
+        shownWarning = s.warningId;
+        MessageBoxW(mainWindow, s.warning.c_str(), L"Taiko Key WASAPI — 저지연 모드 사용 불가",
+                    MB_OK | MB_ICONWARNING);
+    }
     if (!volumeInitialized && s.revision) {
         volumeInitialized = true;
         EnableWindow(mainSlider, TRUE);
@@ -117,12 +141,20 @@ void update() {
     setText(statusText, L"상태: " + s.status);
     setText(pathText, s.settings.config.wstring());
     setText(keysText, s.bindings);
-    setText(detailsText, s.details);
+    setScrolledText(detailsText, s.details);
     setText(errorText, s.error.empty() ? L"" : L"오류가 있습니다. 아래 진단 내용을 확인하세요.");
     if (!SendMessageW(periods, CB_GETDROPPEDSTATE, 0, 0))
         SendMessageW(periods, CB_SETCURSEL, s.settings.stable ? 1 : 0, 0);
+    SendMessageW(diagnosticsBox, BM_SETCHECK, s.settings.diagnostics ? BST_CHECKED : BST_UNCHECKED, 0);
     EnableWindow(GetDlgItem(settingsWindow, DonButton), s.running && s.previewDon);
     EnableWindow(GetDlgItem(settingsWindow, KatButton), s.running && s.previewKat);
+}
+void volumeScrolled(HWND w, WPARAM wp) {
+    app->setVolume(static_cast<int>(SendMessageW(w, TBM_GETPOS, 0, 0)));
+    updateVolume();
+    // Persist once the drag ends; wheel and keyboard steps arrive as single notifications.
+    if (LOWORD(wp) != TB_THUMBTRACK)
+        app->post({CommandType::Save, {}, {}});
 }
 void initSlider(HWND w) {
     SendMessageW(w, TBM_SETRANGE, FALSE, MAKELPARAM(0, 100));
@@ -181,7 +213,9 @@ LRESULT CALLBACK settingsProcedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
         control(w, WC_BUTTONW, L"다시 읽기", WS_TABSTOP, 216, 280, 160, 34, ReloadButton);
         control(w, WC_BUTTONW, L"INI 가져오기", WS_TABSTOP, 388, 280, 168, 34, ImportButton);
         control(w, WC_BUTTONW, L"설정 / 로그 폴더", WS_TABSTOP, 568, 280, 208, 34, FolderButton);
-        statusText = control(w, WC_STATICW, L"", 0, 24, 336, 752, 24);
+        statusText = control(w, WC_STATICW, L"", 0, 24, 336, 452, 24);
+        diagnosticsBox = control(w, WC_BUTTONW, L"타이밍 진단 기록 (timings.csv)",
+                                 BS_AUTOCHECKBOX | WS_TABSTOP, 488, 334, 288, 26, DiagnosticsBox);
         errorText = control(w, WC_STATICW, L"", 0, 24, 364, 752, 24);
         detailsText =
             control(w, WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_TABSTOP,
@@ -200,6 +234,10 @@ LRESULT CALLBACK settingsProcedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
             settingsDevices.changed();
         if (LOWORD(wp) == PeriodBox && HIWORD(wp) == CBN_SELCHANGE)
             app->post({CommandType::Period, {}, SendMessageW(periods, CB_GETCURSEL, 0, 0) == 1});
+        if (LOWORD(wp) == DiagnosticsBox && HIWORD(wp) == BN_CLICKED)
+            app->post({CommandType::Diagnostics,
+                       {},
+                       SendMessageW(diagnosticsBox, BM_GETCHECK, 0, 0) == BST_CHECKED});
         if (LOWORD(wp) == DonButton)
             app->preview(1);
         if (LOWORD(wp) == KatButton)
@@ -207,10 +245,8 @@ LRESULT CALLBACK settingsProcedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
         fileCommand(w, LOWORD(wp));
         return 0;
     case WM_HSCROLL:
-        if (reinterpret_cast<HWND>(lp) == slider) {
-            app->setVolume(static_cast<int>(SendMessageW(slider, TBM_GETPOS, 0, 0)));
-            updateVolume();
-        }
+        if (reinterpret_cast<HWND>(lp) == slider)
+            volumeScrolled(slider, wp);
         return 0;
     case WM_CLOSE:
         ShowWindow(w, SW_HIDE);
@@ -265,10 +301,13 @@ LRESULT CALLBACK procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
         update();
         return 0;
     case WM_HSCROLL:
-        if (reinterpret_cast<HWND>(lp) == mainSlider) {
-            app->setVolume(static_cast<int>(SendMessageW(mainSlider, TBM_GETPOS, 0, 0)));
-            updateVolume();
-        }
+        if (reinterpret_cast<HWND>(lp) == mainSlider)
+            volumeScrolled(mainSlider, wp);
+        return 0;
+    case WM_ENDSESSION:
+        // Windows may terminate the process after this returns, without running destructors.
+        if (wp)
+            app->shutdown();
         return 0;
     case WM_POWERBROADCAST:
         if (wp == PBT_APMRESUMEAUTOMATIC || wp == PBT_APMRESUMESUSPEND)

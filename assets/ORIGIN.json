@@ -1,7 +1,7 @@
 {
   "repository": "https://github.com/4dblackhole/Taiko-Key-ASIO",
   "commit": "c3ed9a669e3369dd149171fba8fc06e84589d316",
-  "license_status": "No LICENSE file found at pinned commit; user explicitly requested original audio",
+  "license_status": "No LICENSE file at the pinned commit; used and redistributed with permission from the original author (4dblackhole)",
   "files": {
     "don.wav": {
       "bytes": 77832,

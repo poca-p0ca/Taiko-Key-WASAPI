@@ -8,7 +8,8 @@
 #include <thread>
 namespace taiko {
 struct StreamInfo {
-    bool client3{}, currentKnown{}, shortened{}, mmcss{}, latencyKnown{};
+    bool client3{}, currentKnown{}, shortened{}, mmcss{}, latencyKnown{}, lockedRetry{};
+    HRESULT lowLatencyResult{S_OK}; // why IAudioClient3 was not used, when client3 is false
     Periods periods;
     uint32_t requested{}, current{}, capacity{}, target{};
     OutputFormat format;
@@ -21,6 +22,7 @@ class WasapiRenderer {
     DiagnosticQueue& diagnostics_;
     Counters& counters_;
     std::atomic<float>& volume_;
+    std::atomic<bool>& recording_;
     Handle stop_{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
     std::thread thread_;
     std::atomic<bool> failed_{};
@@ -30,8 +32,8 @@ class WasapiRenderer {
              std::promise<StreamInfo> ready);
 
   public:
-    WasapiRenderer(PlayQueue& q, DiagnosticQueue& d, Counters& c, std::atomic<float>& v)
-        : requests_(q), diagnostics_(d), counters_(c), volume_(v) {}
+    WasapiRenderer(PlayQueue& q, DiagnosticQueue& d, Counters& c, std::atomic<float>& v, std::atomic<bool>& r)
+        : requests_(q), diagnostics_(d), counters_(c), volume_(v), recording_(r) {}
     ~WasapiRenderer() {
         stop();
     }
@@ -47,4 +49,7 @@ class WasapiRenderer {
     }
 };
 std::string describeStream(const StreamInfo& info);
+// Low-latency fallback cause for session.log (English) and the user alert (Korean).
+std::string lowLatencyFailureLog(const StreamInfo& info);
+std::wstring lowLatencyFailureAlert(const StreamInfo& info);
 } // namespace taiko
