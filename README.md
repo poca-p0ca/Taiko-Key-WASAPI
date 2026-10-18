@@ -8,7 +8,9 @@ Windows 10/11 x64 지원. 별도 ASIO·FlexASIO·FMOD 설치 없이 게임 음�
 
 `TaikoKeyWASAPI.exe`를 실행하면 바로 동작합니다. 기본 키는 **Z / 슬래시(/) = 캇, X / 마침표(.) = 동**이며, osu!의 타격 효과음은 직접 꺼 주세요. 최소화해도 동작하며 메인 창을 닫으면 종료됩니다.
 
-**Device**는 출력 장치, **Volume**은 볼륨, **Settings**는 상세 설정입니다. 키·음원은 `KeyBind.ini`를 편집한 뒤 **Reload ini File**로 적용합니다. 장치·지연·볼륨 설정은 바꾸는 즉시 `AppSettings.ini`에 저장됩니다.
+**Device**는 출력 장치, **Volume**은 볼륨, **Keybinds**는 키·소리 설정, **Settings**는 상세 설정입니다. 장치·지연·볼륨 설정은 바꾸는 즉시 `AppSettings.ini`에 저장됩니다.
+
+**Keybinds**에서는 먼저 **소리** 목록에 WAV를 추가하고, **키** 목록의 **추가...**를 눌러 쓸 키를 키보드로 한 번 누른 뒤 소리를 고르면 됩니다. 확인이나 적용을 누르면 `KeyBind.ini`에 저장되고 바로 반영됩니다. 앱 폴더 밖의 WAV는 저장할 때 `HitSounds/`로 복사합니다. `KeyBind.ini`를 직접 고쳤다면 Settings의 **다시 읽기**로 적용하세요.
 
 저지연 공유 모드를 열 수 없어 일반 공유 모드로 재생하게 되면 경고 창과 `session.log`로 알려 줍니다. 원인이 된 프로그램을 끈 뒤 Settings의 **장치 새로고침**으로 다시 시도할 수 있습니다.
 

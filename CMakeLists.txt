@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(TaikoKeyWASAPI VERSION 0.2.4 LANGUAGES C CXX)
+project(TaikoKeyWASAPI VERSION 0.2.5 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -29,9 +29,9 @@ target_link_libraries(taiko_core PUBLIC converters ole32 uuid ksuser)
 add_library(taiko_windows STATIC src/input/RawInput.cpp src/audio/DeviceCatalog.cpp src/audio/WasapiRenderer.cpp src/app/Controller.cpp)
 target_link_libraries(taiko_windows PUBLIC taiko_core ole32 uuid avrt propsys user32 shell32)
 target_compile_definitions(taiko_windows PRIVATE TAIKO_VERSION="${PROJECT_VERSION}")
-add_executable(TaikoKeyWASAPI WIN32 src/app/Main.cpp src/app/OriginalMainUi.cpp src/app/App.rc)
+add_executable(TaikoKeyWASAPI WIN32 src/app/Main.cpp src/app/KeybindsDialog.cpp src/app/OriginalMainUi.cpp src/app/App.rc)
 set_source_files_properties(src/app/App.rc PROPERTIES OBJECT_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/app/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/src/image/Background.bmp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/app/app.manifest;${CMAKE_CURRENT_SOURCE_DIR}/src/app/resource.h;${CMAKE_CURRENT_SOURCE_DIR}/src/image/Background.bmp")
 target_link_libraries(TaikoKeyWASAPI PRIVATE taiko_windows comctl32 comdlg32 gdi32)
 if(MSVC)
   # App.rc already embeds our manifest; do not generate a second resource ID 1.

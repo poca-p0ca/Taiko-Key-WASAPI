@@ -90,6 +90,7 @@ void Controller::publish() {
     snapshot_.details = detail.str();
     snapshot_.error = error_;
     snapshot_.settings = settings_;
+    snapshot_.config = config_;
     snapshot_.bindings = wide(bindingsText(config_));
     snapshot_.running = running_;
     snapshot_.warning = warning_;
@@ -158,39 +159,41 @@ void Controller::load(const std::filesystem::path& file, bool import) {
     if (import) {
         // Import is a copy, not a persistent reference to another computer/folder.
         // Validate and copy everything before replacing the live portable INI.
-        auto relative = std::filesystem::path(L"HitSounds") / (L"imported-" + std::to_wstring(qpc()));
-        auto destination = root_ / relative;
+        auto destination = root_ / L"HitSounds" / (L"imported-" + std::to_wstring(qpc()));
         if (!std::filesystem::create_directories(destination))
             throw std::runtime_error("Cannot create imported sound directory");
-        std::ostringstream text;
-        text << "// UTF-8; paths are relative to this KeyBind.ini.\n[Sound Set]\n";
-        for (const auto& sound : candidate.sounds) {
-            auto name = std::to_wstring(sound.id) + L".wav";
-            std::filesystem::copy_file(sound.path, destination / name);
-            text << sound.id << ": " << utf8((relative / name).generic_wstring()) << '\n';
+        for (auto& sound : candidate.sounds) {
+            auto copy = destination / (std::to_wstring(sound.id) + L".wav");
+            std::filesystem::copy_file(sound.path, copy);
+            sound.path = copy;
         }
-        text << "\n[KeyBind]\n";
-        for (size_t key = 0; key < candidate.keys.size(); ++key)
-            if (candidate.keys[key])
-                for (const auto& [name, code] : keyNames())
-                    if (code == key) {
-                        text << name << ": " << candidate.keys[key] << '\n';
-                        break;
-                    }
-        auto target = root_ / L"KeyBind.ini";
-        auto imported = parseConfig(text.str(), target);
-        auto temp = root_ / L"KeyBind.import.tmp";
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out << text.str();
-        out.close();
-        if (!out ||
-            !MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            throw std::runtime_error("Cannot save imported KeyBind.ini beside the executable");
+        candidate.file = root_ / L"KeyBind.ini";
+        auto text = configText(candidate);
+        auto imported = parseConfig(text, candidate.file);
+        writeConfigFile(text, imported.file);
         candidate = std::move(imported);
     }
-    // Decode every file before touching the current stream/configuration.
+    apply(std::move(candidate), std::move(bank));
+}
+void Controller::storeBindings(KeyConfig config) {
+    config.file = root_ / L"KeyBind.ini";
+    for (auto& sound : config.sounds)
+        sound.path = portableSound(sound.path);
+    auto text = configText(config);
+    auto candidate = parseConfig(text, config.file);
+    auto bank = std::make_shared<SourceBank>(loadSources(candidate));
+    if (running_ && activeRate_) {
+        auto validated = convertBank(*bank, activeRate_);
+        (void)validated;
+    }
+    writeConfigFile(text, candidate.file);
+    log("Keybinds saved from the editor");
+    apply(std::move(candidate), std::move(bank));
+}
+void Controller::apply(KeyConfig config, std::shared_ptr<SourceBank> bank) {
+    // Every file is decoded before touching the current stream/configuration.
     halt();
-    config_ = std::move(candidate);
+    config_ = std::move(config);
     sources_ = std::move(bank);
     settings_.config = config_.file;
     error_.clear();
@@ -199,6 +202,56 @@ void Controller::load(const std::filesystem::path& file, bool import) {
         startStream("configuration loaded");
     else
         state_ = L"중지";
+}
+static bool sameContents(const std::filesystem::path& a, const std::filesystem::path& b) {
+    if (std::filesystem::file_size(a) != std::filesystem::file_size(b))
+        return false;
+    std::ifstream x(a, std::ios::binary), y(b, std::ios::binary);
+    return std::equal(std::istreambuf_iterator<char>(x), {}, std::istreambuf_iterator<char>(y));
+}
+std::filesystem::path Controller::portableSound(const std::filesystem::path& source) {
+    auto path = std::filesystem::absolute(source).lexically_normal();
+    auto relative = path.lexically_relative(root_);
+    if (!relative.empty() && *relative.begin() != L"..")
+        return path; // already beside the EXE
+    // Keep the app folder self-contained: copy, reusing an identical file of the same name.
+    auto folder = root_ / L"HitSounds";
+    std::filesystem::create_directories(folder);
+    for (int n = 1; n < 1000; ++n) {
+        auto name =
+            n == 1 ? path.filename().wstring()
+                   : path.stem().wstring() + L" (" + std::to_wstring(n) + L")" + path.extension().wstring();
+        auto target = folder / name;
+        if (!std::filesystem::exists(target)) {
+            std::filesystem::copy_file(path, target);
+            return target;
+        }
+        if (sameContents(path, target))
+            return target;
+    }
+    throw std::runtime_error("Too many sounds named " + utf8(path.filename().wstring()) + " in HitSounds");
+}
+void Controller::writeConfigFile(const std::string& text, const std::filesystem::path& target) {
+    auto temp = root_ / L"KeyBind.ini.tmp";
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    out << text;
+    out.close();
+    if (!out ||
+        !MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        throw std::runtime_error("Cannot save KeyBind.ini beside the executable");
+}
+std::future<std::string> Controller::saveBindings(KeyConfig config) {
+    auto job = std::make_unique<PendingBindings>();
+    job->config = std::move(config);
+    auto result = job->result.get_future();
+    {
+        std::lock_guard lock(mutex_);
+        if (pendingBindings_)
+            pendingBindings_->result.set_value("Superseded by a newer save");
+        pendingBindings_ = std::move(job);
+    }
+    post({CommandType::Bindings, {}, {}});
+    return result;
 }
 void Controller::setRecording(bool enabled) {
     settings_.diagnostics = enabled;
@@ -329,6 +382,26 @@ void Controller::run() {
                     case CommandType::Import:
                         load(command.text, true);
                         break;
+                    case CommandType::Bindings: {
+                        std::unique_ptr<PendingBindings> job;
+                        {
+                            std::lock_guard lock(mutex_);
+                            job.swap(pendingBindings_);
+                        }
+                        if (!job)
+                            break;
+                        std::string failure;
+                        try {
+                            storeBindings(std::move(job->config));
+                        } catch (const std::exception& e) {
+                            failure = e.what();
+                            log("Keybinds not saved: " + failure);
+                        }
+                        // The editor reloads from the snapshot as soon as the result arrives.
+                        publish();
+                        job->result.set_value(failure);
+                        break;
+                    }
                     case CommandType::Device:
                         settings_.device = command.text;
                         subscribe();

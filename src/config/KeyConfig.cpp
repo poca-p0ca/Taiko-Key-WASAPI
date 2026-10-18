@@ -270,16 +270,40 @@ KeyConfig readConfig(const std::filesystem::path& file) {
         throw std::runtime_error("Cannot open " + utf8(file.wstring()));
     return parseConfig(std::string(std::istreambuf_iterator<char>(in), {}), file);
 }
+std::string keyName(uint16_t vk) {
+    for (const auto& [name, code] : keyNames())
+        if (code == vk)
+            return name;
+    return {};
+}
+std::string configText(const KeyConfig& config) {
+    std::string text = "// UTF-8; paths are relative to this KeyBind.ini.\n[Sound Set]\n";
+    auto base = config.file.parent_path();
+    for (const auto& sound : config.sounds) {
+        auto path = sound.path.lexically_normal();
+        if (!base.empty() && path.is_absolute()) {
+            auto relative = path.lexically_relative(base);
+            if (!relative.empty() && *relative.begin() != L"..")
+                path = relative;
+        }
+        text += std::to_string(sound.id) + ": " + utf8(path.generic_wstring()) + "\n";
+    }
+    text += "\n[KeyBind]\n";
+    for (size_t key = 0; key < config.keys.size(); ++key)
+        if (config.keys[key]) {
+            auto name = keyName(static_cast<uint16_t>(key));
+            if (name.empty())
+                throw std::runtime_error("Key code " + std::to_string(key) + " has no KeyBind.ini name");
+            text += name + ": " + std::to_string(config.keys[key]) + "\n";
+        }
+    return text;
+}
 std::string bindingsText(const KeyConfig& config) {
     std::string result;
     for (size_t k = 0; k < 256; ++k)
-        if (config.keys[k]) {
-            for (const auto& [name, code] : keyNames())
-                if (code == k) {
-                    result += name + " → " + std::to_string(config.keys[k]) + "   ";
-                    break;
-                }
-        }
+        if (config.keys[k])
+            if (auto name = keyName(static_cast<uint16_t>(k)); !name.empty())
+                result += name + " → " + std::to_string(config.keys[k]) + "   ";
     return result;
 }
 } // namespace taiko

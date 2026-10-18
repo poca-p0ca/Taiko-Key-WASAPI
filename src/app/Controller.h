@@ -3,6 +3,7 @@
 #include "audio/WasapiRenderer.h"
 #include <deque>
 #include <fstream>
+#include <future>
 namespace taiko {
 struct Settings {
     std::wstring device;
@@ -12,22 +13,39 @@ struct Settings {
 struct Snapshot {
     std::wstring status = L"준비 중", details, error, bindings, warning;
     Settings settings;
+    KeyConfig config; // the live configuration, for the Keybinds editor
     std::vector<Device> devices;
     bool running{}, previewDon{}, previewKat{};
     uint64_t revision{}, warningId{}; // warningId changes once per new low-latency fallback
 };
-enum class CommandType { Reload, Import, Device, Period, Diagnostics, Save, Refresh, Resume, Shutdown };
+enum class CommandType {
+    Reload,
+    Import,
+    Bindings,
+    Device,
+    Period,
+    Diagnostics,
+    Save,
+    Refresh,
+    Resume,
+    Shutdown
+};
 struct Command {
     CommandType type;
     std::wstring text;
     bool flag{};
 };
 class Controller {
+    struct PendingBindings {
+        KeyConfig config;
+        std::promise<std::string> result;
+    };
     std::filesystem::path root_;
     std::thread worker_;
     Handle wake_{CreateEventW(nullptr, FALSE, FALSE, nullptr)};
     std::mutex mutex_;
     std::deque<Command> commands_;
+    std::unique_ptr<PendingBindings> pendingBindings_;
     Snapshot snapshot_;
     PlayQueue requests_;
     DiagnosticQueue diagnostics_;
@@ -59,6 +77,10 @@ class Controller {
     void halt();
     void startStream(const char* reason);
     void load(const std::filesystem::path& file, bool import = false);
+    void storeBindings(KeyConfig config);
+    void apply(KeyConfig config, std::shared_ptr<SourceBank> bank);
+    std::filesystem::path portableSound(const std::filesystem::path& source);
+    void writeConfigFile(const std::string& text, const std::filesystem::path& target);
     void setRecording(bool enabled);
     void drainDiagnostics();
     void log(const std::string& text);
@@ -86,6 +108,12 @@ class Controller {
     }
     void preview(uint32_t id) {
         input_.preview(id);
+    }
+    // Copies sounds from outside the app folder beside the EXE, writes KeyBind.ini and applies it.
+    // The future yields an empty string on success, else the error message.
+    std::future<std::string> saveBindings(KeyConfig config);
+    void captureKeys(HWND target) {
+        input_.capture(target);
     }
     const std::filesystem::path& root() const {
         return root_;

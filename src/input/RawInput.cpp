@@ -97,12 +97,15 @@ LRESULT CALLBACK RawInput::procedure(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
                 if (k.Flags & RI_KEY_BREAK)
                     self->heldAtEnable_[physical] = false;
                 if (self->state_.transition(reinterpret_cast<uintptr_t>(raw.header.hDevice), physical,
-                                            k.Flags, &full) &&
-                    !self->heldAtEnable_[physical]) {
-                    auto sound = self->keys_[physical];
-                    if (!sound)
-                        sound = self->keys_[key];
-                    self->emit(sound, received);
+                                            k.Flags, &full)) {
+                    if (HWND target = self->capture_.load())
+                        PostMessageW(target, KeyCapturedMessage, physical, 0);
+                    if (!self->heldAtEnable_[physical]) {
+                        auto sound = self->keys_[physical];
+                        if (!sound)
+                            sound = self->keys_[key];
+                        self->emit(sound, received);
+                    }
                 }
                 if (full)
                     self->counters_.inputDeviceOverflow.fetch_add(1, std::memory_order_relaxed);

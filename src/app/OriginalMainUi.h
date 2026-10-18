@@ -8,7 +8,7 @@ enum class HwndID {
     COMBO_DRIVER = 100,
     STATIC_COMBO_DRIVER = 201,
     STATIC_VOLUME = 202,
-    BUTTON_RELOAD_INI = 105,
+    BUTTON_KEYBINDS = 105, // was BUTTON_RELOAD_INI; opens the Keybinds editor
     TRACKBAR_VOLUME = 104,
 };
 constexpr int DriverComboY = 10;

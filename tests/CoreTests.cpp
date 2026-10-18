@@ -148,6 +148,31 @@ static void parserTests() {
         require(std::string(e.what()).find(":7:") != std::string::npos, "Missing WAV source line");
     }
 }
+static void editorConfigTests() {
+    require(keyName('Z') == "Z" && keyName(VK_OEM_2) == "VK_OEM_2", "Key names");
+    require(keyName(VK_HANGUL) == "VK_HANGEUL", "Alias resolves to the first name");
+    require(keyName(0xFF).empty(), "Unnamed key code");
+    KeyConfig edited;
+    edited.file = temp / L"KeyBind.ini";
+    auto outside = temp.parent_path() / L"밖의 소리.wav";
+    edited.sounds = {
+        {1, temp / L"HitSounds/don.wav", 0}, {7, temp / L"한글 폴더/소리 1.wav", 0}, {3, outside, 0}};
+    edited.keys['Z'] = 7;
+    edited.keys[VK_LSHIFT] = 1;
+    edited.keys[VK_OEM_2] = 3;
+    auto text = configText(edited);
+    require(text.find("1: HitSounds/don.wav\n") != std::string::npos, "Sound path written relative to INI");
+    require(text.find(utf8(outside.generic_wstring())) != std::string::npos, "Outside path kept absolute");
+    auto back = parseConfig(text, edited.file);
+    require(back.keys == edited.keys, "Key bindings round trip");
+    require(back.sounds.size() == 3, "Sound list round trip");
+    for (size_t i = 0; i < 3; ++i)
+        require(back.sounds[i].id == edited.sounds[i].id &&
+                    back.sounds[i].path == edited.sounds[i].path.lexically_normal(),
+                "Sound entry round trip");
+    edited.keys[0xFF] = 1;
+    rejects([&] { configText(edited); }, "Unnamed key serialized");
+}
 static void queueTests() {
     SpscQueue<uint64_t, 3> q;
     uint64_t x{};
@@ -435,6 +460,7 @@ int main() {
     int failed = 0;
     for (auto [name, test] : std::vector<std::pair<const char*, std::function<void()>>>{
              {"config", parserTests},
+             {"editor config", editorConfigTests},
              {"SPSC queue", queueTests},
              {"input state", inputTests},
              {"voice mixer", mixerTests},
