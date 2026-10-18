@@ -1,6 +1,7 @@
 // Directly extracted UI blocks from Taiko-Key-ASIO/TaikoKeyASIO_main.cpp.
 // Commit: c3ed9a669e3369dd149171fba8fc06e84589d316. See THIRD_PARTY_NOTICES.md.
-// Changes: extracted functions, control ID mapping, Driver -> Device, resource ID.
+// Changes: extracted functions, control ID mapping, Driver -> Device, resource ID,
+// Reload ini File -> Keybinds.
 // Input/audio are connected by Main.cpp to the existing WASAPI controller.
 #include "app/OriginalMainUi.h"
 #include <commctrl.h>
@@ -35,8 +36,8 @@ void create(HWND hWnd, HINSTANCE hInst) {
             70, DriverComboY, 300, 200, hWnd, (HMENU)HwndID::COMBO_DRIVER, hInst, NULL);
         hComboDesc = CreateWindow(_T("static"), _T("Device:"), WS_CHILD | WS_VISIBLE | SS_CENTER,
             10, DriverComboY, 60, 24, hWnd, (HMENU)HwndID::STATIC_COMBO_DRIVER, hInst, NULL);
-        hButtonKeyLoad = CreateWindow(_T("button"), _T("Reload ini File"), WS_CHILD | WS_VISIBLE | BS_CENTER,
-            10, ReloadButtonY, 110, 30, hWnd, (HMENU)HwndID::BUTTON_RELOAD_INI, hInst, NULL);
+        hButtonKeyLoad = CreateWindow(_T("button"), _T("Keybinds"), WS_CHILD | WS_VISIBLE | BS_CENTER,
+            10, ReloadButtonY, 110, 30, hWnd, (HMENU)HwndID::BUTTON_KEYBINDS, hInst, NULL);
         hTrackbarVolume = CreateWindow(TRACKBAR_CLASS, _T("Volume"), WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS | TBS_BOTH | TBS_NOTICKS | WS_TABSTOP,
             240, ReloadButtonY, 150, 30, hWnd, (HMENU)HwndID::TRACKBAR_VOLUME, hInst, NULL);
         hVolumeDesc = CreateWindow(_T("static"), _T("Volume: 100"), WS_CHILD | WS_VISIBLE | SS_LEFT,

@@ -121,45 +121,49 @@ static std::vector<uint8_t> canonicalRiff(const std::vector<uint8_t>& b, const R
         out.push_back(0);
     return out;
 }
+Sample decodeSound(uint32_t id, const std::filesystem::path& path) {
+    auto size = std::filesystem::file_size(path);
+    if (size > 64 * 1024 * 1024)
+        throw std::runtime_error("WAV exceeds 64 MiB");
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        throw std::runtime_error("Cannot open WAV");
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    if (!file.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
+        throw std::runtime_error("Cannot read WAV");
+    bytes = canonicalRiff(bytes, validateRiff(bytes));
+    drwav decoder{};
+    if (!drwav_init_memory(&decoder, bytes.data(), bytes.size(), nullptr))
+        throw std::runtime_error("WAV decoder rejected file");
+    struct Guard {
+        drwav* d;
+        ~Guard() {
+            drwav_uninit(d);
+        }
+    } guard{&decoder};
+    if (decoder.totalPCMFrameCount > uint64_t(decoder.sampleRate) * 30 || !decoder.totalPCMFrameCount)
+        throw std::runtime_error("WAV must be 0..30 seconds");
+    Sample s{id, decoder.sampleRate, decoder.channels, {}};
+    s.pcm.resize(static_cast<size_t>(decoder.totalPCMFrameCount) * s.channels);
+    if (drwav_read_pcm_frames_f32(&decoder, decoder.totalPCMFrameCount, s.pcm.data()) !=
+        decoder.totalPCMFrameCount)
+        throw std::runtime_error("Truncated PCM");
+    for (float& v : s.pcm) {
+        if (!std::isfinite(v))
+            throw std::runtime_error("NaN/Inf WAV sample");
+        v = std::clamp(v, -1.f, 1.f);
+    }
+    return s;
+}
 SourceBank loadSources(const KeyConfig& config) {
     SourceBank bank;
     size_t total = 0;
     for (const auto& spec : config.sounds)
         try {
-            auto size = std::filesystem::file_size(spec.path);
-            if (size > 64 * 1024 * 1024)
-                throw std::runtime_error("WAV exceeds 64 MiB");
-            std::ifstream file(spec.path, std::ios::binary);
-            if (!file)
-                throw std::runtime_error("Cannot open WAV");
-            std::vector<uint8_t> bytes(static_cast<size_t>(size));
-            if (!file.read(reinterpret_cast<char*>(bytes.data()), bytes.size()))
-                throw std::runtime_error("Cannot read WAV");
-            bytes = canonicalRiff(bytes, validateRiff(bytes));
-            drwav decoder{};
-            if (!drwav_init_memory(&decoder, bytes.data(), bytes.size(), nullptr))
-                throw std::runtime_error("WAV decoder rejected file");
-            struct Guard {
-                drwav* d;
-                ~Guard() {
-                    drwav_uninit(d);
-                }
-            } guard{&decoder};
-            if (decoder.totalPCMFrameCount > uint64_t(decoder.sampleRate) * 30 || !decoder.totalPCMFrameCount)
-                throw std::runtime_error("WAV must be 0..30 seconds");
-            Sample s{spec.id, decoder.sampleRate, decoder.channels, {}};
-            total += static_cast<size_t>(decoder.totalPCMFrameCount) * s.channels * sizeof(float);
+            auto s = decodeSound(spec.id, spec.path);
+            total += s.pcm.size() * sizeof(float);
             if (total > 256 * 1024 * 1024)
                 throw std::runtime_error("Decoded sound bank exceeds 256 MiB");
-            s.pcm.resize(static_cast<size_t>(decoder.totalPCMFrameCount) * s.channels);
-            if (drwav_read_pcm_frames_f32(&decoder, decoder.totalPCMFrameCount, s.pcm.data()) !=
-                decoder.totalPCMFrameCount)
-                throw std::runtime_error("Truncated PCM");
-            for (float& v : s.pcm) {
-                if (!std::isfinite(v))
-                    throw std::runtime_error("NaN/Inf WAV sample");
-                v = std::clamp(v, -1.f, 1.f);
-            }
             bank.sounds.push_back(std::move(s));
         } catch (const std::exception& e) {
             throw std::runtime_error(utf8(config.file.wstring()) + ":" + std::to_string(spec.line) + ": " +

@@ -1,4 +1,5 @@
 #include "app/Controller.h"
+#include "app/KeybindsDialog.h"
 #include "app/OriginalMainUi.h"
 #include <commctrl.h>
 #include <commdlg.h>
@@ -318,6 +319,10 @@ LRESULT CALLBACK procedure(HWND w, UINT message, WPARAM wp, LPARAM lp) {
             mainDevices.changed();
         if (LOWORD(wp) == SettingsMenu)
             showSettings();
+        if (LOWORD(wp) == static_cast<int>(original_ui::HwndID::BUTTON_KEYBINDS)) {
+            showKeybinds(w, *app);
+            return 0;
+        }
         fileCommand(w, LOWORD(wp));
         return 0;
     case WM_DESTROY:
@@ -340,7 +345,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             MessageBoxW(nullptr, L"Taiko Key WASAPI가 이미 실행 중입니다.", L"Taiko Key WASAPI", MB_OK);
             return 0;
         }
-        INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES};
+        INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_STANDARD_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
         InitCommonControlsEx(&cc);
         NONCLIENTMETRICSW metrics{};
         metrics.cbSize = sizeof(metrics);

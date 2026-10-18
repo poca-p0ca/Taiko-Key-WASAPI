@@ -22,6 +22,8 @@ struct SoundBank {
         return nullptr;
     }
 };
+// Decodes and validates one WAV file; throws with the reason if it cannot be used.
+Sample decodeSound(uint32_t id, const std::filesystem::path& path);
 SourceBank loadSources(const KeyConfig& config);
 SoundBank convertBank(const SourceBank& source, uint32_t rate);
 struct OutputFormat {
